@@ -45,10 +45,35 @@
   </div>
 
   <script>
-    if (!navigator.geolocation) {
-      document.getElementById("status").textContent =
-        "Your device doesn't support location access.";
-    } else {
+    (async function() {
+      // Check if location check is enabled in settings
+      let locationCheckEnabled = true;
+      try {
+        const settingsRes = await fetch("/api/settings", { credentials: "include" });
+        const settingsData = await settingsRes.json();
+        if (settingsData.ok && settingsData.settings) {
+          locationCheckEnabled = settingsData.settings.locationCheckEnabled !== false;
+        }
+      } catch (e) {
+        console.warn("[Entry] Failed to check location setting, defaulting to enabled");
+      }
+
+      // If location check is disabled, skip geolocation and redirect directly
+      if (!locationCheckEnabled) {
+        console.log("[Entry] Location check disabled - allowing access");
+        const nextUrl = new URL("/index.html", window.location.origin);
+        nextUrl.search = window.location.search;
+        window.location.href = nextUrl.toString();
+        return;
+      }
+
+      // Location check is enabled - proceed with geolocation
+      if (!navigator.geolocation) {
+        document.getElementById("status").textContent =
+          "Your device doesn't support location access.";
+        return;
+      }
+
       navigator.geolocation.getCurrentPosition(async (pos) => {
         const userLat = pos.coords.latitude;
         const userLong = pos.coords.longitude;
@@ -81,7 +106,7 @@
         document.getElementById("status").textContent =
           "Please enable location access to continue.";
       });
-    }
+    })();
   </script>
 </body>
 </html>
