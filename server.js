@@ -524,7 +524,27 @@ await init();
 
 // ---------- Simple distance check endpoint ----------
 // Uses fixed restaurant location (same as CONFIG_LOCATION) and a 100m radius.
-app.post("/check-distance", (req, res) => {
+app.post("/check-distance", async (req, res) => {
+  // Check if location check is enabled in settings
+  let locationCheckEnabled = true;
+  try {
+    if (mongoDb) {
+      const doc = await mongoDb.collection("settings").findOne({ id: "main" });
+      locationCheckEnabled = doc?.locationCheckEnabled !== false;
+    } else {
+      const d = await readData();
+      locationCheckEnabled = d.settings?.locationCheckEnabled !== false;
+    }
+  } catch (e) {
+    console.warn("[Check Distance] Failed to read settings, defaulting to enabled");
+  }
+
+  // If location check is disabled, always allow
+  if (!locationCheckEnabled) {
+    console.log("[Check Distance] Location check disabled - allowing access");
+    return res.json({ allowed: true, distance: 0, radius: CONFIG_LOCATION.radiusMeters });
+  }
+
   const { userLat, userLong } = req.body || {};
 
   const lat = Number(userLat);
