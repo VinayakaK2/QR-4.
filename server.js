@@ -812,6 +812,83 @@ app.post("/api/validate-location", async (req, res) => {
     return res.status(400).json({ ok: false, msg: "tableId required" });
   }
 
+  if (isAdminRequest(req)) {
+    console.log("[Location Check] Admin bypass - allowing access");
+    return res.json({ ok: true, inside: true, distance: 0, msg: "Admin bypass" });
+  }
+
+  // Check if location check is enabled in settings FIRST
+  let locationCheckEnabled = true;
+  try {
+    if (mongoDb) {
+      const doc = await mongoDb.collection("settings").findOne({ id: "main" });
+      locationCheckEnabled = doc?.locationCheckEnabled !== false; // Default to true if not set
+    } else {
+      const d = await readData();
+      locationCheckEnabled = d.settings?.locationCheckEnabled !== false; // Default to true if not set
+    }
+  } catch (e) {
+    console.warn("[Location Check] Failed to read settings, defaulting to enabled");
+  }
+
+  // If location check is disabled, always allow (even without lat/lng)
+  if (!locationCheckEnabled) {
+    console.log("[Location Check] Location check is disabled - allowing access");
+    const normalizedSessionData = Object.prototype.hasOwnProperty.call(req.body || {}, "sessionData")
+      ? sanitizeSessionData(sessionData)
+      : undefined;
+    const requestedRestoreUserId = typeof restoreUserId === "string" && restoreUserId.trim().length
+      ? restoreUserId.trim()
+      : null;
+    let activeUserId = typeof userId === "string" && userId.trim().length
+      ? userId.trim()
+      : null;
+    let session = null;
+    let sessionRestored = false;
+
+    if (activeUserId) {
+      const existing = await loadSession(activeUserId);
+      if (existing && existing.tableId === table) {
+        session = existing;
+      } else {
+        activeUserId = null;
+      }
+    }
+
+    if (!session && requestedRestoreUserId) {
+      const restored = await loadSession(requestedRestoreUserId);
+      if (restored && restored.tableId === table) {
+        session = restored;
+        activeUserId = restored.userId;
+        sessionRestored = true;
+      }
+    }
+
+    if (!session) {
+      activeUserId = activeUserId || uuidv4();
+      session = await upsertSession({
+        userId: activeUserId,
+        tableId: table,
+        userData: normalizedSessionData
+      });
+    } else {
+      session = await upsertSession({
+        userId: activeUserId,
+        tableId: table,
+        userData: normalizedSessionData !== undefined ? normalizedSessionData : session.userData
+      });
+    }
+
+    return res.json({
+      ok: true,
+      inside: true,
+      distance: 0,
+      session: session ? { ...session, restored: sessionRestored } : null,
+      msg: "Location check disabled - access granted"
+    });
+  }
+
+  // Location check is enabled - require lat/lng
   if (!lat || !lng) {
     console.log("[Location Check] Missing location:", { lat, lng });
     return res.status(400).json({ ok: false, msg: "Location required" });
@@ -820,11 +897,6 @@ app.post("/api/validate-location", async (req, res) => {
   if (Number.isNaN(CONFIG_LOCATION.lat) || Number.isNaN(CONFIG_LOCATION.lng)) {
     console.error("[Location Check] Server location not configured:", CONFIG_LOCATION);
     return res.status(500).json({ ok: false, msg: "Server location not configured" });
-  }
-
-  if (isAdminRequest(req)) {
-    console.log("[Location Check] Admin bypass - allowing access");
-    return res.json({ ok: true, inside: true, distance: 0, msg: "Admin bypass" });
   }
 
   const normalizedSessionData = Object.prototype.hasOwnProperty.call(req.body || {}, "sessionData")
@@ -953,6 +1025,53 @@ app.get("/api/orders", auth, async (req, res) => {
     orders = d.orders || [];
   }
   res.json({ ok: true, orders });
+});
+
+app.get("/api/settings", auth, async (req, res) => {
+  try {
+    let settings = {};
+    if (mongoDb) {
+      const doc = await mongoDb.collection("settings").findOne({ id: "main" });
+      settings = doc ? doc : { locationCheckEnabled: true };
+    } else {
+      const d = await readData();
+      settings = d.settings || { locationCheckEnabled: true };
+    }
+    res.json({ ok: true, settings });
+  } catch (err) {
+    console.error("Settings fetch failed", err);
+    res.status(500).json({ ok: false, message: "Failed to load settings" });
+  }
+});
+
+app.patch("/api/settings", auth, async (req, res) => {
+  try {
+    const { locationCheckEnabled } = req.body || {};
+    
+    if (typeof locationCheckEnabled !== "boolean") {
+      return res.status(400).json({ ok: false, message: "locationCheckEnabled must be a boolean" });
+    }
+
+    if (mongoDb) {
+      await mongoDb.collection("settings").updateOne(
+        { id: "main" },
+        { $set: { locationCheckEnabled, updatedAt: new Date().toISOString() } },
+        { upsert: true }
+      );
+    } else {
+      const d = await readData();
+      if (!d.settings) {
+        d.settings = {};
+      }
+      d.settings.locationCheckEnabled = locationCheckEnabled;
+      await writeData(d);
+    }
+    
+    res.json({ ok: true, settings: { locationCheckEnabled } });
+  } catch (err) {
+    console.error("Settings update failed", err);
+    res.status(500).json({ ok: false, message: "Failed to update settings" });
+  }
 });
 
 app.patch("/api/orders/:id", auth, async (req, res) => {
@@ -1176,11 +1295,10 @@ app.get("/api/categories", auth, async (req, res) => {
   }
 });
 
-app.post("/api/categories", auth, async (req, res) => {
-  try {
-    const { name, displayOrder, active } = req.body || {};
+app.post("/api/categories", auth, async (req, res) => {  try {
+    const { name, displayOrder, active, imageUrl } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, msg: "name required" });
-    const cat = { id: uuidv4(), name, displayOrder: Number(displayOrder) || 1, active: active !== false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const cat = { id: uuidv4(), name, imageUrl: imageUrl || "", displayOrder: Number(displayOrder) || 1, active: active !== false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     if (mongoDb) {
       await mongoDb.collection("categories").insertOne({ ...cat, _id: cat.id });
     } else {
@@ -1199,11 +1317,11 @@ app.post("/api/categories", auth, async (req, res) => {
 app.put("/api/categories/:id", auth, async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
-    const { name, displayOrder, active } = req.body || {};
+    const { name, displayOrder, active, imageUrl } = req.body || {};
     if (!id) return res.status(400).json({ ok: false, msg: "id required" });
     let updated = null;
     if (mongoDb) {
-      const u = await mongoDb.collection("categories").updateOne({ _id: id }, { $set: { name, displayOrder: Number(displayOrder)||1, active: !!active, updatedAt: new Date() } });
+      const u = await mongoDb.collection("categories").updateOne({ _id: id }, { $set: { name, imageUrl: imageUrl || "", displayOrder: Number(displayOrder)||1, active: !!active, updatedAt: new Date() } });
       if (!u.matchedCount) return res.status(404).json({ ok: false, msg: "not found" });
       updated = await mongoDb.collection("categories").findOne({ _id: id });
     } else {
@@ -1211,7 +1329,7 @@ app.put("/api/categories/:id", auth, async (req, res) => {
       d.categories = d.categories || [];
       const idx = d.categories.findIndex(c => String(c.id) === id);
       if (idx < 0) return res.status(404).json({ ok: false, msg: "not found" });
-      d.categories[idx] = { ...d.categories[idx], name, displayOrder: Number(displayOrder)||1, active: !!active, updatedAt: new Date().toISOString() };
+      d.categories[idx] = { ...d.categories[idx], name, imageUrl: imageUrl || "", displayOrder: Number(displayOrder)||1, active: !!active, updatedAt: new Date().toISOString() };
       await writeData(d);
       updated = d.categories[idx];
     }
@@ -1399,7 +1517,7 @@ app.get("/api/public/categories", async (req, res) => {
       const d = await readData();
       categories = d.categories || [];
     }
-    const safe = categories.map(c => ({ id: String(c.id||""), name: c.name||"", displayOrder: c.displayOrder??null, active: c.active!==false }));
+    const safe = categories.map(c => ({ id: String(c.id||""), name: c.name||"", imageUrl: c.imageUrl||"", displayOrder: c.displayOrder??null, active: c.active!==false }));
     res.json({ ok: true, categories: safe });
   } catch (err) {
     console.error("Categories fetch failed", err);
