@@ -727,6 +727,26 @@
             const sessionReady = await ensureSessionForCurrentTable();
             if (!sessionReady) return;
 
+            // Check if location check is enabled before requesting geolocation
+            let locationCheckEnabled = true;
+            try {
+                const settingsRes = await fetch("/api/settings", { credentials: "include" });
+                const settingsData = await settingsRes.json();
+                if (settingsData.ok && settingsData.settings) {
+                    locationCheckEnabled = settingsData.settings.locationCheckEnabled !== false;
+                }
+            } catch (e) {
+                console.warn("[Location] Failed to check location setting, defaulting to enabled");
+            }
+
+            // If location check is disabled, skip geolocation and allow access
+            if (!locationCheckEnabled) {
+                console.log("[Location] Location check disabled - allowing access without geolocation");
+                overlayRef.style.display = "none";
+                document.body.style.display = "block";
+                return;
+            }
+
             navigator.geolocation.getCurrentPosition(async (pos) => {
                 latestCoords = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
                 const result = await requestLocationValidation(latestCoords, { silent: false });
@@ -743,13 +763,33 @@
         });
 
         async function verifyLocationBeforeOrder() {
-            if (!navigator.geolocation) {
-                alert("Your device does not support location access.");
-                return false;
-            }
             const sessionReady = await ensureSessionForCurrentTable();
             if (!sessionReady) {
                 alert("Unable to start session. Please rescan the QR code.");
+                return false;
+            }
+
+            // Check if location check is enabled
+            let locationCheckEnabled = true;
+            try {
+                const settingsRes = await fetch("/api/settings", { credentials: "include" });
+                const settingsData = await settingsRes.json();
+                if (settingsData.ok && settingsData.settings) {
+                    locationCheckEnabled = settingsData.settings.locationCheckEnabled !== false;
+                }
+            } catch (e) {
+                console.warn("[Location] Failed to check location setting, defaulting to enabled");
+            }
+
+            // If location check is disabled, allow order without location verification
+            if (!locationCheckEnabled) {
+                console.log("[Location] Location check disabled - allowing order placement");
+                return true;
+            }
+
+            // Location check is enabled - require geolocation
+            if (!navigator.geolocation) {
+                alert("Your device does not support location access.");
                 return false;
             }
 
@@ -771,7 +811,7 @@
             });
         }
         // Fade-in animation on scroll
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
             const fadeElements = document.querySelectorAll('.fade-in');
             
             const fadeInOnScroll = function() {
@@ -812,7 +852,7 @@
                         `;
                         card.appendChild(overlay);
                         card.addEventListener('click', function() {
-                            alert(`Page for ${cat.name} not created yet`);
+                            renderCategoryItems(cat.id, cat.name);
                         });
                         grid.appendChild(card);
                     });
@@ -821,7 +861,49 @@
                 }
             }
 
-            awaitloadCategories();
+            await loadCategories();
+
+            async function renderCategoryItems(categoryId, categoryName) {
+                let container = document.getElementById('categoryItems');
+                if (!container) {
+                    container = document.createElement('div');
+                    container.id = 'categoryItems';
+                    container.style.marginTop = '20px';
+                    document.querySelector('.container').appendChild(container);
+                }
+                container.innerHTML = `<h2 style="margin:20px 0;">${categoryName}</h2><div style="padding:10px;color:#718096;">Loading items...</div>`;
+                try {
+                    const res = await fetch(`/api/public/menu?categoryId=${encodeURIComponent(categoryId)}`);
+                    const data = await res.json();
+                    const items = (data.ok && Array.isArray(data.menu)) ? data.menu : [];
+                    if (!items.length) {
+                        container.innerHTML = `<h2 style="margin:20px 0;">${categoryName}</h2><div style="padding:10px;color:#718096;">No items available</div>`;
+                        return;
+                    }
+                    const list = document.createElement('div');
+                    list.style.display = 'grid';
+                    list.style.gridTemplateColumns = 'repeat(auto-fit, minmax(240px, 1fr))';
+                    list.style.gap = '16px';
+                    list.style.marginBottom = '40px';
+                    items.forEach(item => {
+                        const card = document.createElement('div');
+                        card.style.background = '#fff';
+                        card.style.border = '1px solid #eee';
+                        card.style.borderRadius = '12px';
+                        card.style.padding = '16px';
+                        card.innerHTML = `
+                            <div style="font-weight:600;margin-bottom:6px;">${item.name}</div>
+                            <div style="color:#718096;margin-bottom:10px;">${item.description||''}</div>
+                            <div style="font-weight:700;color:#E63946;">₹${item.price}</div>
+                        `;
+                        list.appendChild(card);
+                    });
+                    container.innerHTML = `<h2 style="margin:20px 0;">${categoryName}</h2>`;
+                    container.appendChild(list);
+                } catch (e) {
+                    container.innerHTML = `<h2 style="margin:20px 0;">${categoryName}</h2><div style="padding:10px;color:#E63946;">Failed to load items</div>`;
+                }
+            }
 
             // Floating cart functionality
             const floatingCart = document.querySelector('.floating-cart');
