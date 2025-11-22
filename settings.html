@@ -696,6 +696,17 @@
                         <span class="toggle-slider"></span>
                     </label>
                 </div>
+                
+                <div class="toggle-label" style="border-top: 2px solid #E2E8F0; padding-top: 15px; margin-top: 10px;">
+                    <span><i class="fas fa-map-marker-alt" style="margin-right: 8px; color: var(--primary-red);"></i>User Location Check</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="locationCheckToggle" checked onchange="toggleLocationCheck(event)">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <p style="color: var(--text-light); font-size: 0.85rem; margin-top: 5px; margin-left: 0;">
+                    Enable or disable location verification for users placing orders. When disabled, users can place orders without location check.
+                </p>
             </div>
 
             <button class="btn btn-primary" style="margin-top: 20px;" onclick="saveThemeSettings()">
@@ -970,7 +981,7 @@
         }
 
         // Load saved settings
-        function loadSettings() {
+        async function loadSettings() {
             // Load restaurant info
             const restaurantInfo = JSON.parse(localStorage.getItem('restaurantInfo') || '{}');
             if (restaurantInfo.name) {
@@ -991,6 +1002,52 @@
             document.getElementById('notificationsToggle').checked = themeSettings.notifications !== false;
             document.getElementById('autoBackupToggle').checked = themeSettings.autoBackup || false;
             document.getElementById('emailReportsToggle').checked = themeSettings.emailReports !== false;
+            
+            // Load location check setting from server
+            try {
+                const res = await fetch('/api/settings', { credentials: 'include' });
+                const data = await res.json();
+                if (data.ok && data.settings) {
+                    document.getElementById('locationCheckToggle').checked = data.settings.locationCheckEnabled !== false;
+                }
+            } catch (error) {
+                console.error('Failed to load location check setting:', error);
+                // Default to enabled if fetch fails
+                document.getElementById('locationCheckToggle').checked = true;
+            }
+        }
+
+        // Toggle location check
+        async function toggleLocationCheck(event) {
+            const enabled = event.target.checked;
+            const toggle = event.target;
+            const originalState = toggle.checked;
+            
+            try {
+                toggle.disabled = true;
+                
+                const res = await fetch('/api/settings', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ locationCheckEnabled: enabled })
+                });
+                
+                const data = await res.json();
+                
+                if (data.ok) {
+                    alert(`Location check ${enabled ? 'enabled' : 'disabled'} successfully!`);
+                } else {
+                    throw new Error(data.message || 'Failed to update setting');
+                }
+            } catch (error) {
+                console.error('Failed to update location check setting:', error);
+                alert('Failed to update location check setting. Please try again.');
+                // Revert toggle state
+                toggle.checked = !originalState;
+            } finally {
+                toggle.disabled = false;
+            }
         }
     </script>
 </body>
